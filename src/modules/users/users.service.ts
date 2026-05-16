@@ -1,19 +1,43 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
+import { InjectModel } from '@nestjs/mongoose';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { Model } from 'mongoose';
+import { FindOptionsWhere, Repository } from 'typeorm';
 import { User } from './entities/user.entity';
+
+// MongoDB uchun keladigan ma'lumotlar tipini aniqlashtiramiz
+interface IUserMongo {
+  name?: string;
+  email?: string;
+  password?: string;
+}
 
 @Injectable()
 export class UsersService {
   constructor(
+    // 1. PostgreSQL Repozitoriyasi
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+
+    // 2. MongoDB Modeli (InjectModel yordamida)
+    @InjectModel('UserMongo')
+    private readonly mongoUserModel: Model<IUserMongo>,
   ) {}
 
   // CREATE
   async create(data: Partial<User>) {
+    // PostgreSQL-ga saqlash
     const user = this.userRepository.create(data);
-    return this.userRepository.save(user);
+    const savedPgUser = await this.userRepository.save(user);
+
+    // MongoDB-ga nusxasini saqlash
+    await this.mongoUserModel.create({
+      name: savedPgUser.name,
+      email: savedPgUser.email,
+      password: data.password,
+    });
+
+    return savedPgUser;
   }
 
   // GET ALL
@@ -22,26 +46,44 @@ export class UsersService {
   }
 
   // GET ONE
-  async findOne(id: string) {
-    const user = await this.userRepository.findOne({ where: { id } });
+  async findOne(id: number | string) {
+    const whereCondition = { id } as FindOptionsWhere<User>;
+    const user = await this.userRepository.findOneBy(whereCondition);
 
     if (!user) {
-      throw new NotFoundException('User not found');
+      throw new NotFoundException('User not found in PostgreSQL');
     }
 
     return user;
   }
 
   // UPDATE
-  async update(id: string, data: Partial<User>) {
+  async update(id: number | string, data: Partial<User>) {
     const user = await this.findOne(id);
+    const oldEmail = user.email;
+
     Object.assign(user, data);
-    return this.userRepository.save(user);
+    const updatedPgUser = await this.userRepository.save(user);
+
+    // MongoDB'da ham ma'lumotni yangilash
+    await this.mongoUserModel.updateOne(
+      { email: oldEmail },
+      { $set: { name: updatedPgUser.name, email: updatedPgUser.email } },
+    );
+
+    return updatedPgUser;
   }
 
   // DELETE
-  async remove(id: string) {
+  async remove(id: number | string) {
     const user = await this.findOne(id);
-    return this.userRepository.remove(user);
+    const emailToDelete = user.email;
+
+    const removedUser = await this.userRepository.remove(user);
+
+    // MongoDB'dan ham o'chirish
+    await this.mongoUserModel.deleteOne({ email: emailToDelete });
+
+    return removedUser;
   }
 }
